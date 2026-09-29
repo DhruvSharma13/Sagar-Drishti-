@@ -185,9 +185,11 @@ class TestPhase3Pipeline(unittest.TestCase):
         print(f"  Short history (10 < 30 days): {res_short['reason']}")
         print(f"  Full history (30 days):      status={res_full['status']}, label='{res_full['label']}'")
 
+    @patch("run_ingest.get_erddap_latest_date")
     @patch("run_ingest.fetch_and_transform_erddap_sst")
-    def test_04_ingest_audit_run_recording_mocked(self, mock_fetch):
+    def test_04_ingest_audit_run_recording_mocked(self, mock_fetch, mock_latest):
         """Verify standalone run_ingest_pipeline records audit entry without touching network (MOCKED)."""
+        mock_latest.return_value = "2026-09-29"
         doc, run_doc = create_mock_sst_doc_and_run("2026-09-29")
         mock_fetch.return_value = (doc, run_doc)
 
@@ -203,17 +205,19 @@ class TestPhase3Pipeline(unittest.TestCase):
         self.assertEqual(last_run.get("status"), "success")
         print(f"\n[PASS] Mocked Ingest pipeline executed in <0.1s with zero network calls!")
 
-    def test_05_backfill_missing_dates_discovery(self):
+    @patch("run_ingest.get_erddap_latest_date")
+    def test_05_backfill_missing_dates_discovery(self, mock_latest):
         """Verify find_missing_dates discovers missing dates within retention window up to max_backfill limit."""
         today = datetime.now(timezone.utc).date()
         date_today = today.strftime("%Y-%m-%d")
         date_yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d")
+        mock_latest.return_value = date_today
 
         # Save today's live document
-        doc_today = {"dataset_id": "ncdcOisst21NrtAgg_LonPM180", "date": date_today, "region_id": "indian_ocean", "is_seed": False}
+        doc_today = {"dataset_id": "ncdcOisst21NrtAgg_LonPM180", "date": date_today, "region_id": "indian_ocean", "is_seed": False, "data_source": "live"}
         db_manager.save_sst_daily(doc_today)
 
-        missing = find_missing_dates(retention_days=180, max_backfill=5)
+        missing = find_missing_dates(retention_days=180, max_backfill=5, max_date=date_today)
         self.assertNotIn(date_today, missing, "Today should not be in missing dates list.")
         self.assertIn(date_yesterday, missing, "Yesterday should be identified as missing.")
         self.assertLessEqual(len(missing), 5, "Missing dates count should not exceed max_backfill=5.")
@@ -241,6 +245,51 @@ class TestPhase3Pipeline(unittest.TestCase):
         self.assertEqual(run_doc.status, "success")
         self.assertEqual(run_doc.data_source, "live")
         print("\n[PASS] fetch_and_transform_erddap_sst keyword parameter 'date_str' verified!")
+
+    @patch("run_ingest.get_erddap_latest_date")
+    @patch("run_ingest.fetch_and_transform_erddap_sst")
+    def test_07_pipeline_404_newest_date_success_exit_0(self, mock_fetch, mock_latest):
+        """Verify pipeline exits with code 0 when newest date returns 404 (skipped) but older dates succeed."""
+        mock_latest.return_value = "2026-09-29"
+        doc_old, run_old = create_mock_sst_doc_and_run("2026-09-28")
+
+        def side_effect(date_str=None):
+            if date_str == "2026-09-29":
+                return None, None  # HTTP 404 skipped
+            return doc_old, run_old
+
+        mock_fetch.side_effect = side_effect
+        success, msg = run_ingest_pipeline()
+        self.assertTrue(success, "Pipeline must exit 0 when newest date is 404 skipped and older dates succeed.")
+        print(f"\n[PASS] Pipeline 404 on newest date + success on older dates verified: exit 0! ({msg})")
+
+    @patch("run_ingest.get_erddap_latest_date")
+    @patch("run_ingest.fetch_and_transform_erddap_sst")
+    def test_08_pipeline_all_dates_5xx_failure_exit_1(self, mock_fetch, mock_latest):
+        """Verify pipeline exits with code 1 (success=False) when all dates fail with 5xx/network errors."""
+        mock_latest.return_value = "2026-09-29"
+        failed_run = IngestRunDocument(
+            job_id="job-err-500", dataset_id="ncdcOisst21NrtAgg_LonPM180",
+            started_at="2026-09-29T00:00:00Z", status="failed", data_source="none",
+            error_message="HTTP 503 Service Unavailable"
+        )
+        mock_fetch.return_value = (None, failed_run)
+
+        success, msg = run_ingest_pipeline()
+        self.assertFalse(success, "Pipeline must exit 1 (success=False) when all dates fail with 5xx/network errors.")
+        print(f"\n[PASS] Pipeline all dates failing with 5xx verified: exit 1! ({msg})")
+
+    def test_09_find_missing_dates_ignores_seed_and_demo(self):
+        """Verify find_missing_dates counts ONLY real live documents (is_seed=False, data_source='live') as present."""
+        today = datetime.now(timezone.utc).date().strftime("%Y-%m-%d")
+
+        # Save a demo seed document for today
+        seed_doc = {"dataset_id": "ncdcOisst21NrtAgg_LonPM180", "date": today, "region_id": "indian_ocean", "is_seed": True, "data_source": "demo"}
+        db_manager.save_sst_daily(seed_doc)
+
+        missing = find_missing_dates(retention_days=180, max_backfill=5, max_date=today)
+        self.assertIn(today, missing, "Date with demo/seed data must still be marked as missing so live data refills it!")
+        print(f"\n[PASS] find_missing_dates correctly ignores seed/demo records and requests live refill!")
 
 if __name__ == "__main__":
     unittest.main()

@@ -160,10 +160,45 @@ def generate_seed_sst_grid(date_str: Optional[str] = None) -> SSTDailyDocument:
         }
     )
 
-def fetch_and_transform_erddap_sst(date_str: Optional[str] = None) -> Tuple[Optional[SSTDailyDocument], IngestRunDocument]:
+import urllib.request
+import urllib.error
+import ssl
+
+def get_erddap_latest_date() -> str:
+    """
+    Queries ERDDAP for dataset's latest available time via single-point griddap query.
+    Returns YYYY-MM-DD string. Fallback: today minus 2 days if lookup fails.
+    """
+    fallback_date = (datetime.now(timezone.utc).date() - timedelta(days=2)).strftime("%Y-%m-%d")
+    hosts = [ERDDAP_BASE_URL, FALLBACK_ERDDAP_BASE_URL]
+    ctx = ssl._create_unverified_context()
+    query_str = f"sst[(last)][(0.0)][({MIN_LAT})][({MIN_LON})]"
+
+    for host in hosts:
+        url = f"{host}/griddap/{ERDDAP_DATASET_ID}.csv?{query_str}"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            with urllib.request.urlopen(req, context=ctx, timeout=10) as resp:
+                raw_csv = resp.read().decode("utf-8", errors="ignore").splitlines()
+                if len(raw_csv) >= 3:
+                    parts = raw_csv[2].split(",")
+                    if len(parts) > 0:
+                        time_raw = parts[0].strip().replace('"', '')
+                        if len(time_raw) >= 10:
+                            latest_date = time_raw[:10]
+                            print(f"[ERDDAP LATEST DATE] Discovered latest published date on ERDDAP: {latest_date}")
+                            return latest_date
+        except Exception as ex:
+            print(f"[ERDDAP LATEST DATE WARNING] Host '{host}' query failed: {ex}")
+
+    print(f"[ERDDAP LATEST DATE FALLBACK] Using fallback date (today-2d): {fallback_date}")
+    return fallback_date
+
+def fetch_and_transform_erddap_sst(date_str: Optional[str] = None) -> Tuple[Optional[SSTDailyDocument], Optional[IngestRunDocument]]:
     """
     Fetches NOAA OISST v2.1 grid data via NOAA CoastWatch ERDDAP griddap.
-    If fetch fails or times out: records an ingest_runs document with status='failed'
+    If date returns HTTP 404 (not published yet): logs SKIPPED and returns (None, None) without retry/failed run doc.
+    If fetch fails with 5xx/timeout: records an ingest_runs document with status='failed'
     and data_source='none', and returns (None, ingest_run). Does NOT generate seed data.
     """
     job_id = f"ingest_{int(time.time())}"
@@ -180,7 +215,7 @@ def fetch_and_transform_erddap_sst(date_str: Optional[str] = None) -> Tuple[Opti
     hosts = [ERDDAP_BASE_URL, FALLBACK_ERDDAP_BASE_URL]
     ctx = ssl._create_unverified_context()
 
-    time_spec = f"({date_str}T12:00:00Z)" if date_str else "[(last)]"
+    time_spec = "(last)" if not date_str or date_str == "last" else f"({date_str}T12:00:00Z)"
     stride_lat = 4 if GRID_STEP >= 1.0 else 1
     stride_lon = 4 if GRID_STEP >= 1.0 else 1
     
@@ -200,6 +235,7 @@ def fetch_and_transform_erddap_sst(date_str: Optional[str] = None) -> Tuple[Opti
         print(f"[INGEST JOB] Timeout setting: {FETCH_TIMEOUT} seconds")
 
         max_retries = 2
+        is_404 = False
         for attempt in range(1, max_retries + 1):
             t0 = time.time()
             try:
@@ -213,6 +249,17 @@ def fetch_and_transform_erddap_sst(date_str: Optional[str] = None) -> Tuple[Opti
                     fetch_success = True
                     used_host = host
                     break
+            except urllib.error.HTTPError as http_ex:
+                elapsed = time.time() - t0
+                if http_ex.code == 404:
+                    print(f"[INGEST JOB SKIPPED] Date '{date_str or 'latest'}' not yet published on ERDDAP (HTTP 404).")
+                    is_404 = True
+                    break
+                err_line = f"Host '{host}' Attempt {attempt}/{max_retries} failed after {elapsed:.2f}s (HTTP {http_ex.code}: {http_ex.reason})"
+                print(f"[INGEST JOB WARNING] {err_line}")
+                error_details.append(err_line)
+                if attempt < max_retries:
+                    time.sleep(2)
             except Exception as ex:
                 elapsed = time.time() - t0
                 err_line = f"Host '{host}' Attempt {attempt}/{max_retries} failed after {elapsed:.2f}s (Error: {type(ex).__name__}: {ex})"
@@ -220,6 +267,10 @@ def fetch_and_transform_erddap_sst(date_str: Optional[str] = None) -> Tuple[Opti
                 error_details.append(err_line)
                 if attempt < max_retries:
                     time.sleep(2)
+
+        if is_404:
+            # Date not yet published: return (None, None) cleanly without writing failed audit run
+            return None, None
 
         if fetch_success:
             break

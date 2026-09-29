@@ -21,7 +21,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 if BASE_DIR not in sys.path:
     sys.path.append(BASE_DIR)
 
-from erddap_client import fetch_and_transform_erddap_sst, ERDDAP_DATASET_ID
+from erddap_client import fetch_and_transform_erddap_sst, get_erddap_latest_date, ERDDAP_DATASET_ID
 from database import db_manager, MONGO_URI, get_db_name
 
 RETENTION_WINDOW_DAYS = int(os.getenv("RETENTION_WINDOW_DAYS", "180"))
@@ -88,22 +88,30 @@ def release_distributed_lock(job_id: str):
         except Exception as ex:
             print(f"[LOCK RELEASE WARNING] Failed to release lock: {ex}")
 
-def find_missing_dates(retention_days: int = 180, max_backfill: int = 7) -> List[str]:
+def find_missing_dates(retention_days: int = 180, max_backfill: int = 7, max_date: Optional[str] = None) -> List[str]:
     """
-    Identifies missing live SST dates within the retention window (up to max_backfill days).
+    Identifies missing live SST dates within retention window up to max_backfill days, ending at max_date.
+    Counts ONLY real live documents (is_seed: False, data_source: "live").
     """
-    today_dt = datetime.now(timezone.utc).date()
-    candidate_dates = [(today_dt - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(retention_days)]
+    if max_date:
+        try:
+            start_dt = datetime.strptime(max_date, "%Y-%m-%d").date()
+        except ValueError:
+            start_dt = datetime.now(timezone.utc).date()
+    else:
+        start_dt = datetime.now(timezone.utc).date()
+
+    candidate_dates = [(start_dt - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(retention_days)]
 
     existing_dates = set()
     if db_manager.use_mongo and db_manager.db is not None:
         try:
-            existing_dates = set(db_manager.db.sst_daily.distinct("date", {"is_seed": False}))
+            existing_dates = set(db_manager.db.sst_daily.distinct("date", {"is_seed": False, "data_source": "live"}))
         except Exception:
             pass
     else:
         for v in db_manager.memory_store.get("sst_daily", {}).values():
-            if not v.get("is_seed", False) and "date" in v:
+            if not v.get("is_seed", False) and v.get("data_source") == "live" and "date" in v:
                 existing_dates.add(v["date"])
 
     missing = [d for d in candidate_dates if d not in existing_dates]
@@ -139,11 +147,12 @@ def run_ingest_pipeline() -> Tuple[bool, str]:
     """
     Main ingestion & backfill workflow:
     1. Acquire distributed lock (30-min default expiry).
-    2. Identify missing dates in retention window up to MAX_BACKFILL_DAYS_PER_RUN.
-    3. Fetch, validate & store live SST records for missing dates (renewing lock per step).
-    4. Run retention cleanup.
-    5. Record audit run in ingest_runs.
-    6. Release lock in finally block.
+    2. Query ERDDAP for latest published date.
+    3. Identify missing dates in retention window up to MAX_BACKFILL_DAYS_PER_RUN.
+    4. Fetch, validate & store live SST records for missing dates (renewing lock per step).
+    5. Run retention cleanup.
+    6. Record audit run in ingest_runs.
+    7. Release lock in finally block.
     """
     job_id = f"job-{uuid.uuid4().hex[:8]}"
     started_at = datetime.now(timezone.utc).isoformat()
@@ -175,26 +184,37 @@ def run_ingest_pipeline() -> Tuple[bool, str]:
         print("[INGEST SKIPPED] Recorded skipped job in audit trail. Exiting code 0.")
         return True, "Job skipped due to active lock."
 
-    overall_success = True
     dates_processed = 0
+    dates_skipped_404 = 0
+    real_failures = 0
 
     try:
-        missing_dates = find_missing_dates(RETENTION_WINDOW_DAYS, MAX_BACKFILL_DAYS_PER_RUN)
+        latest_published_date = get_erddap_latest_date()
+        missing_dates = find_missing_dates(RETENTION_WINDOW_DAYS, MAX_BACKFILL_DAYS_PER_RUN, max_date=latest_published_date)
+        print(f"[BACKFILL DISCOVERY] Target latest published date: {latest_published_date}")
         print(f"[BACKFILL DISCOVERY] Identified {len(missing_dates)} missing dates to fetch: {missing_dates}")
 
         # Default to latest if no missing dates found
-        target_dates = missing_dates if missing_dates else [None]
+        target_dates = missing_dates if missing_dates else [latest_published_date]
 
         for target_date in target_dates:
             renew_distributed_lock(job_id)
             doc, ingest_run = fetch_and_transform_erddap_sst(date_str=target_date)
+            
+            if doc is None and ingest_run is None:
+                # HTTP 404: date not published
+                print(f"[INGEST SKIPPED] Date {target_date or 'latest'} is not yet published on ERDDAP (HTTP 404).")
+                dates_skipped_404 += 1
+                continue
+
             run_dict = ingest_run.model_dump() if hasattr(ingest_run, 'model_dump') else ingest_run.dict()
             run_dict["job_id"] = job_id
-            
+
             if doc is None:
-                overall_success = False
+                # Real failure (5xx, timeout, zero valid records)
+                real_failures += 1
                 db_manager.record_ingest_run(run_dict)
-                print(f"[INGEST WARNING] Fetch failed for date: {target_date or 'latest'}")
+                print(f"[INGEST WARNING] Fetch failed for date: {target_date or 'latest'} (Status: {run_dict.get('status')})")
                 continue
 
             doc_dict = doc.model_dump() if hasattr(doc, 'model_dump') else doc.dict()
@@ -211,12 +231,24 @@ def run_ingest_pipeline() -> Tuple[bool, str]:
         # Run retention cleanup
         purged_count = clean_expired_live_sst(RETENTION_WINDOW_DAYS)
 
+        if dates_processed > 0:
+            overall_success = True
+            summary_msg = f"Successfully processed {dates_processed} date(s)."
+        elif real_failures == 0:
+            overall_success = True
+            summary_msg = f"All target dates up-to-date or not yet published (404 skipped: {dates_skipped_404})."
+        else:
+            overall_success = False
+            summary_msg = f"Ingestion failed with {real_failures} real error(s)."
+
         print("--------------------------------------------------")
         print("LIVE INGESTION & RETENTION COMPLETED:")
         print(f"Dates Processed: {dates_processed}")
+        print(f"Skipped (404)  : {dates_skipped_404}")
+        print(f"Real Failures  : {real_failures}")
         print(f"Purged Expired : {purged_count} records (> {RETENTION_WINDOW_DAYS} days)")
         print("==================================================")
-        return overall_success, f"Processed {dates_processed} dates."
+        return overall_success, summary_msg
 
     finally:
         release_distributed_lock(job_id)
