@@ -29,6 +29,7 @@ _load_test_env(os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 from database import db_manager, get_db_name
 from models import SSTDailyDocument, IngestRunDocument, GridMetadata
 from run_ingest import acquire_distributed_lock, release_distributed_lock, clean_expired_live_sst, run_ingest_pipeline, find_missing_dates
+from erddap_client import fetch_and_transform_erddap_sst
 from anomaly_engine import compute_rolling_baseline_anomaly
 
 def create_mock_sst_doc_and_run(date_str="2026-09-29"):
@@ -217,6 +218,29 @@ class TestPhase3Pipeline(unittest.TestCase):
         self.assertIn(date_yesterday, missing, "Yesterday should be identified as missing.")
         self.assertLessEqual(len(missing), 5, "Missing dates count should not exceed max_backfill=5.")
         print(f"\n[PASS] Backfill missing dates discovery verified: {missing}")
+
+    @patch("urllib.request.urlopen")
+    def test_06_fetch_and_transform_erddap_sst_signature_kwarg(self, mock_urlopen):
+        """Verify fetch_and_transform_erddap_sst accepts date_str keyword argument exactly as run_ingest.py calls it."""
+        mock_resp = MagicMock()
+        mock_resp.status = 200
+        # Minimal ERDDAP CSV response format (header, units, 1 data row)
+        csv_content = (
+            "time,depth,latitude,longitude,sst,anom\n"
+            "UTC,m,degrees_north,degrees_east,degree_C,degree_C\n"
+            "2026-09-29T12:00:00Z,0.0,0.0,60.0,28.5,0.5\n"
+        ).encode("utf-8")
+        mock_resp.read.return_value = csv_content
+        mock_resp.__enter__.return_value = mock_resp
+        mock_urlopen.return_value = mock_resp
+
+        # Call with exact keyword argument date_str=...
+        doc, run_doc = fetch_and_transform_erddap_sst(date_str="2026-09-29")
+        self.assertIsNotNone(doc, "Document must not be None for valid CSV response.")
+        self.assertEqual(doc.date, "2026-09-29")
+        self.assertEqual(run_doc.status, "success")
+        self.assertEqual(run_doc.data_source, "live")
+        print("\n[PASS] fetch_and_transform_erddap_sst keyword parameter 'date_str' verified!")
 
 if __name__ == "__main__":
     unittest.main()

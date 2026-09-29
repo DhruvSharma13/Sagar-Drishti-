@@ -160,7 +160,7 @@ def generate_seed_sst_grid(date_str: Optional[str] = None) -> SSTDailyDocument:
         }
     )
 
-def fetch_and_transform_erddap_sst(date_target: Optional[str] = None) -> Tuple[Optional[SSTDailyDocument], IngestRunDocument]:
+def fetch_and_transform_erddap_sst(date_str: Optional[str] = None) -> Tuple[Optional[SSTDailyDocument], IngestRunDocument]:
     """
     Fetches NOAA OISST v2.1 grid data via NOAA CoastWatch ERDDAP griddap.
     If fetch fails or times out: records an ingest_runs document with status='failed'
@@ -180,7 +180,7 @@ def fetch_and_transform_erddap_sst(date_target: Optional[str] = None) -> Tuple[O
     hosts = [ERDDAP_BASE_URL, FALLBACK_ERDDAP_BASE_URL]
     ctx = ssl._create_unverified_context()
 
-    time_spec = f"({date_target}T12:00:00Z)" if date_target else "[(last)]"
+    time_spec = f"({date_str}T12:00:00Z)" if date_str else "[(last)]"
     stride_lat = 4 if GRID_STEP >= 1.0 else 1
     stride_lon = 4 if GRID_STEP >= 1.0 else 1
     
