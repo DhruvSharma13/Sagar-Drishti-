@@ -56,23 +56,45 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       </div>
 
-      {/* Center Dashboard Stats Cards */}
+      {/* Center Dashboard Stats & Provenance Badges */}
       <div className="hidden lg:flex items-center space-x-3">
+        {/* Dynamic Data Provenance Badge */}
+        <div className="px-3 py-1.5 rounded-lg bg-ocean-navy/80 border border-slate-700/60 flex items-center space-x-2 text-xs">
+          <Database className="w-4 h-4 text-cyan-400" />
+          <div>
+            <span className="text-slate-400 block text-[10px]">Data Source Status</span>
+            <div className="flex items-center space-x-1.5">
+              {(!stats || stats.data_source === 'demo' || stats.is_seed) && (
+                <span className="font-bold text-amber-400 bg-amber-950/80 px-2 py-0.5 rounded border border-amber-500/50 text-[11px] animate-pulse">
+                  DEMO DATA
+                </span>
+              )}
+              {stats?.data_source === 'live' && !stats.is_seed && (
+                <span className="font-bold text-emerald-400 bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/50 text-[11px]">
+                  LIVE (NOAA OISST)
+                </span>
+              )}
+              {stats?.data_source === 'cached' && !stats.is_seed && (
+                <span className="font-bold text-yellow-300 bg-yellow-950/80 px-2 py-0.5 rounded border border-yellow-500/50 text-[11px]">
+                  CACHED ({stats.data_timestamp_age_hours ? `${stats.data_timestamp_age_hours}h age` : 'MongoDB'})
+                </span>
+              )}
+
+              {/* Stale Alert Tag */}
+              {stats?.is_stale && (
+                <span className="font-bold text-red-400 bg-red-950/90 px-1.5 py-0.5 rounded border border-red-500/60 text-[10px]" title="Data is older than stale threshold (3 days)">
+                  ⚠️ STALE
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
         <div className="px-3 py-1.5 rounded-lg bg-ocean-navy/80 border border-slate-700/60 flex items-center space-x-2 text-xs">
           <Radio className="w-4 h-4 text-ocean-cyan animate-pulse" />
           <div>
             <span className="text-slate-400 block text-[10px]">Active Floats</span>
             <span className="font-bold text-slate-100">{stats ? stats.total_active_floats : '—'}</span>
-          </div>
-        </div>
-
-        <div className="px-3 py-1.5 rounded-lg bg-ocean-navy/80 border border-slate-700/60 flex items-center space-x-2 text-xs">
-          <Database className="w-4 h-4 text-india-saffron" />
-          <div>
-            <span className="text-slate-400 block text-[10px]">INCOIS ERDDAP</span>
-            <span className="font-semibold text-emerald-400 text-[11px]">
-              {stats ? `${stats.real_floats_count} Real` : 'Live'}
-            </span>
           </div>
         </div>
 
@@ -90,9 +112,9 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         <div className="px-3 py-1.5 rounded-lg bg-ocean-navy/80 border border-slate-700/60 text-xs">
-          <span className="text-slate-400 block text-[10px]">Data Timestamp</span>
+          <span className="text-slate-400 block text-[10px]">Data Date</span>
           <span className="font-mono text-[11px] text-cyan-300">
-            {stats ? stats.last_sync_time.split(' ')[0] : '2026-09-10'}
+            {stats?.data_timestamp ? stats.data_timestamp.split('T')[0] : (stats?.is_seed ? 'DEMO GRID' : '—')}
           </span>
         </div>
       </div>

@@ -201,3 +201,74 @@ def evaluate_profile_anomalies(
 
     has_anomaly = len(anomalies) > 0
     return anomalies, has_anomaly, round(max_z, 2)
+
+import os
+
+def compute_rolling_baseline_anomaly(
+    history_docs: List[Dict[str, Any]],
+    target_idx: Optional[int] = None,
+    min_days: Optional[int] = None
+) -> Dict[str, Any]:
+    """
+    Computes secondary rolling baseline anomaly across stored SST grid history documents.
+    Label: 'rolling baseline (N days)'
+    Primary anomaly remains NOAA's native 'anom' variable stored in each record.
+    If stored history < min_days (default 30, configurable via MIN_HISTORY_DAYS), returns status='unavailable' with explicit reason.
+    """
+    if min_days is None:
+        min_days = int(os.getenv("MIN_HISTORY_DAYS", "30"))
+    stored_days = len(history_docs)
+    label = f"rolling baseline ({stored_days} days)"
+
+    if stored_days < min_days:
+        return {
+            "status": "unavailable",
+            "reason": f"Insufficient history (requires at least {min_days} days, {stored_days} available)",
+            "label": label,
+            "stored_days_count": stored_days,
+            "min_days_required": min_days,
+            "primary_anomaly_used": True
+        }
+
+    # Extract SST values across days for the target_idx (or compute mean/std stats)
+    valid_values = []
+    for doc in history_docs:
+        grid = doc.get("sst_grid", [])
+        if target_idx is not None and target_idx < len(grid):
+            val = grid[target_idx]
+            if val is not None and not math.isnan(val):
+                valid_values.append(val)
+        elif "stats" in doc and "mean_sst" in doc["stats"]:
+            val = doc["stats"]["mean_sst"]
+            if val is not None:
+                valid_values.append(val)
+
+    if not valid_values or len(valid_values) < min_days:
+        return {
+            "status": "unavailable",
+            "reason": f"Insufficient non-null measurements in stored history ({len(valid_values)} valid, {min_days} required)",
+            "label": label,
+            "stored_days_count": stored_days,
+            "min_days_required": min_days,
+            "primary_anomaly_used": True
+        }
+
+    # Calculate rolling mean & std
+    n = len(valid_values)
+    mean_val = sum(valid_values) / float(n)
+    var_val = sum((x - mean_val) ** 2 for x in valid_values) / float(n)
+    std_val = math.sqrt(var_val)
+
+    latest_val = valid_values[-1]
+    rolling_anom = latest_val - mean_val
+
+    return {
+        "status": "available",
+        "label": label,
+        "stored_days_count": stored_days,
+        "rolling_mean": round(mean_val, 3),
+        "rolling_std": round(std_val, 3),
+        "rolling_anomaly": round(rolling_anom, 3),
+        "primary_anomaly_used": False
+    }
+

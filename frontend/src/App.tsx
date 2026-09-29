@@ -139,6 +139,22 @@ export function App() {
         onOpenAnomalies={() => setIsAnomaliesOpen(true)}
       />
 
+      {/* Prominent Demo Data Banner */}
+      {(!stats || stats.data_source === 'demo' || stats.is_seed) && (
+        <div className="relative z-30 w-full bg-amber-600/90 text-amber-950 font-bold px-4 py-1 text-center text-xs tracking-wide shadow-md flex items-center justify-center space-x-2 border-b border-amber-500">
+          <span>⚠️ DEMO DATA - not real measurements</span>
+          <span className="font-normal opacity-90 hidden sm:inline">| NOAA ERDDAP live ingest deferred; using synthetic baseline grid & profiles</span>
+        </div>
+      )}
+
+      {/* Stale Warning Banner */}
+      {stats?.is_stale && (
+        <div className="relative z-30 w-full bg-red-600/90 text-white font-bold px-4 py-1 text-center text-xs tracking-wide shadow-md flex items-center justify-center space-x-2 border-b border-red-500">
+          <span>⚠️ STALE DATA WARNING</span>
+          <span className="font-normal opacity-90">| Stored SST measurements are older than 3 days</span>
+        </div>
+      )}
+
       {/* Main 3D Globe Viewer */}
       <main className="absolute inset-0 z-10 w-full h-full">
         <GlobeView

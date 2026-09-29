@@ -59,8 +59,8 @@ export const FloatDetailDrawer: React.FC<FloatDetailDrawerProps> = ({ float, onC
             <>
               <Database className="w-4 h-4 text-amber-400" />
               <div>
-                <span className="font-bold text-amber-300 text-xs">Simulated Data</span>
-                <span className="block text-[10px] text-slate-400">Offline Fallback / Demo Profile</span>
+                <span className="font-bold text-amber-300 text-xs">Simulated Demo Data</span>
+                <span className="block text-[10px] text-slate-400">Offline Fallback • demo baseline</span>
               </div>
             </>
           )}
@@ -68,7 +68,7 @@ export const FloatDetailDrawer: React.FC<FloatDetailDrawerProps> = ({ float, onC
         <span className={`text-[10px] px-2 py-0.5 rounded font-mono font-semibold uppercase ${
           float.data_source === 'real' ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' : 'bg-amber-950 text-amber-300 border border-amber-500/40'
         }`}>
-          {float.data_source}
+          {float.data_source === 'real' ? 'real' : 'demo baseline'}
         </span>
       </div>
 

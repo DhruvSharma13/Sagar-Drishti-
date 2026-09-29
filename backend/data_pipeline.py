@@ -26,18 +26,18 @@ def fetch_real_erddap_data() -> List[FloatProfile]:
     Returns list of FloatProfile objects with data_source='real'.
     """
     ctx = ssl._create_unverified_context()
-    # INCOIS ERDDAP Indian Argo dataset query URL
-    # Query latitude -30 to 30, longitude 40 to 100
     erddap_url = (
         "https://erddap.incois.gov.in/erddap/info/Indian_ARGO_Floats/index.json"
     )
     req = urllib.request.Request(erddap_url, headers={'User-Agent': 'Mozilla/5.0 (SagarDrishti/1.0)'})
     
-    print("Connecting to INCOIS ERDDAP server (https://erddap.incois.gov.in/erddap/)...")
+    print("[DIAGNOSTIC] Stage 1: Initiating fetch to INCOIS ERDDAP...")
+    print(f"[DIAGNOSTIC] Endpoint URL: {erddap_url}")
     try:
-        with urllib.request.urlopen(req, context=ctx, timeout=1.5) as resp:
+        with urllib.request.urlopen(req, context=ctx, timeout=2.0) as resp:
+            print(f"[DIAGNOSTIC] Response HTTP Status: {resp.status}")
             info_data = json.loads(resp.read().decode('utf-8'))
-            print("Successfully reached INCOIS ERDDAP server info.")
+            print("[DIAGNOSTIC] Successfully fetched INCOIS ERDDAP metadata info.")
 
         query_url = (
             "https://erddap.incois.gov.in/erddap/tabledap/Indian_ARGO_Floats.json"
@@ -46,12 +46,14 @@ def fetch_real_erddap_data() -> List[FloatProfile]:
         )
         req2 = urllib.request.Request(query_url, headers={'User-Agent': 'Mozilla/5.0 (SagarDrishti/1.0)'})
         with urllib.request.urlopen(req2, context=ctx, timeout=2.0) as resp2:
+            print(f"[DIAGNOSTIC] Query HTTP Status: {resp2.status}")
             table_data = json.loads(resp2.read().decode('utf-8'))
             rows = table_data['table']['rows']
-            print(f"Fetched {len(rows)} real Argo records from INCOIS ERDDAP!")
+            print(f"[DIAGNOSTIC] Stage 2: Ingested {len(rows)} raw rows from INCOIS ERDDAP.")
             
             # Group rows by platform_number and time
             floats_map: Dict[str, Dict[str, Any]] = {}
+            rejected_count = 0
             for r in rows:
                 p_num = str(r[0])
                 time_str = str(r[1])
@@ -61,6 +63,10 @@ def fetch_real_erddap_data() -> List[FloatProfile]:
                 temp = float(r[5]) if r[5] is not None else None
                 psal = float(r[6]) if r[6] is not None else None
                 
+                if temp is None and psal is None:
+                    rejected_count += 1
+                    continue
+
                 key = f"{p_num}_{time_str[:10]}"
                 if key not in floats_map:
                     floats_map[key] = {
@@ -79,12 +85,13 @@ def fetch_real_erddap_data() -> List[FloatProfile]:
                     "salinity": psal
                 })
 
+            print(f"[DIAGNOSTIC] Stage 3: Transformed into {len(floats_map)} distinct float profiles. Rejected records (all-null): {rejected_count}")
+
             real_profiles: List[FloatProfile] = []
             for item in floats_map.values():
                 measurements = []
                 for m in sorted(item["measurements"], key=lambda x: x["depth"]):
                     depth = m["depth"]
-                    # Add chlorophyll profile modeling based on depth
                     chla = 0.85 * math.exp(-((depth-60)/30)**2) if depth <= 200 else None
                     measurements.append(
                         ProfileMeasurement(
@@ -123,11 +130,21 @@ def fetch_real_erddap_data() -> List[FloatProfile]:
                     )
 
             if real_profiles:
-                print(f"Parsed {len(real_profiles)} real float profiles.")
+                print(f"[DIAGNOSTIC] Stage 4: Successfully processed {len(real_profiles)} valid real float profiles.")
                 return real_profiles
 
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode('utf-8', errors='ignore')[:500]
+        except Exception:
+            pass
+        print(f"[DIAGNOSTIC FAILURE] INCOIS ERDDAP HTTP {e.code} Error: {e.reason}")
+        print(f"[DIAGNOSTIC FAILURE] INCOIS Response Body: {body}")
+    except urllib.error.URLError as e:
+        print(f"[DIAGNOSTIC FAILURE] INCOIS ERDDAP URL/Timeout Error: {e.reason}")
     except Exception as e:
-        print(f"INCOIS ERDDAP Live Fetch Error/Timeout: {e}")
+        print(f"[DIAGNOSTIC FAILURE] INCOIS ERDDAP Live Fetch Error: {e}")
 
     # Fallback attempt to IFREMER Argo GDAC ERDDAP mirror
     try:
@@ -136,12 +153,24 @@ def fetch_real_erddap_data() -> List[FloatProfile]:
             "?platform_number%2Ctime%2Clatitude%2Clongitude%2CPRES%2CTEMP%2CPSAL"
             "&latitude%3E=-30&latitude%3C=30&longitude%3E=40&longitude%3C=100&time%3E=2024-01-01T00:00:00Z"
         )
-        req_ifremer = urllib.request.Request(ifremer_url, headers={'User-Agent': 'Mozilla/5.0'})
+        print(f"[DIAGNOSTIC] Attempting IFREMER GDAC ERDDAP fallback URL: {ifremer_url}")
+        req_ifremer = urllib.request.Request(ifremer_url, headers={'User-Agent': 'Mozilla/5.0 (SagarDrishti/1.0)'})
         with urllib.request.urlopen(req_ifremer, context=ctx, timeout=8) as resp:
             data = json.loads(resp.read().decode('utf-8'))
-            print("Successfully fetched from IFREMER GDAC ERDDAP!")
+            print(f"[DIAGNOSTIC] IFREMER Response HTTP Status: {resp.status}")
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode('utf-8', errors='ignore')[:500]
+        except Exception:
+            pass
+        print(f"[DIAGNOSTIC FAILURE] IFREMER GDAC HTTP {e.code} Error: {e.reason}")
+        print(f"[DIAGNOSTIC FAILURE] IFREMER Query URL: {ifremer_url}")
+        print(f"[DIAGNOSTIC FAILURE] IFREMER Response Body: {body}")
+    except urllib.error.URLError as e:
+        print(f"[DIAGNOSTIC FAILURE] IFREMER GDAC URL/Timeout Error: {e.reason}")
     except Exception as e:
-        print(f"IFREMER GDAC ERDDAP Fetch Error/Timeout: {e}")
+        print(f"[DIAGNOSTIC FAILURE] IFREMER GDAC ERDDAP Fetch Error: {e}")
 
     return []
 
@@ -155,8 +184,8 @@ def generate_indian_ocean_dataset() -> Dict[str, Any]:
     """
     real_floats = fetch_real_erddap_data()
     is_real = len(real_floats) > 0
-    data_source_flag = "real" if is_real else "simulated"
-    data_source_desc = "INCOIS ERDDAP Data (Real)" if is_real else "Simulated Data"
+    data_source_flag = "real" if is_real else "demo"
+    data_source_desc = "INCOIS ERDDAP Data (Real)" if is_real else "Demo Dataset (Seed)"
 
     print(f"Data Pipeline Data Source Mode: '{data_source_flag}' ({data_source_desc})")
 
@@ -274,6 +303,7 @@ def generate_indian_ocean_dataset() -> Dict[str, Any]:
                 institution=st["institution"],
                 data_source=data_source_flag,
                 data_source_description=data_source_desc,
+                is_seed=not is_real,
                 latitude=st["lat"],
                 longitude=st["lon"],
                 timestamp=timestamp_str,
@@ -294,6 +324,7 @@ def generate_indian_ocean_dataset() -> Dict[str, Any]:
             mission="Bay of Bengal Monsoonal Upper-Ocean Physics",
             institution="INCOIS Hyderabad",
             data_source=data_source_flag,
+            is_seed=not is_real,
             current_lat=14.8,
             current_lon=84.5,
             status="Active Mission",

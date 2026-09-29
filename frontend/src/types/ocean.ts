@@ -102,6 +102,15 @@ export interface DashboardStats {
     max_lon: number;
   };
   database_engine?: string;
+  data_source?: "live" | "cached" | "demo";
+  is_seed?: boolean;
+  data_timestamp?: string | null;
+  fetched_at?: string | null;
+  data_timestamp_age_hours?: number | null;
+  fetched_at_age_hours?: number | null;
+  is_stale?: boolean | null;
+  fallback_reason?: string | null;
+  dataset_id?: string;
 }
 
 export interface OceanGridPoint {

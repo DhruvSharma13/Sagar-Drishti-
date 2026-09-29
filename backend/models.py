@@ -28,8 +28,9 @@ class FloatProfile(BaseModel):
     wmo_id: str
     platform_type: str  # "Argo Float", "Deep Argo", "Apex Float", "Ocean Glider"
     institution: str  # "INCOIS (India)", "CSIRO", "IFREMER", "NIO"
-    data_source: str  # "real" | "simulated"
+    data_source: str  # "real" | "demo" | "simulated"
     data_source_description: str
+    is_seed: bool = False
     latitude: float
     longitude: float
     timestamp: str
@@ -45,7 +46,8 @@ class GliderTrack(BaseModel):
     name: str
     mission: str
     institution: str
-    data_source: str  # "real" | "simulated"
+    data_source: str  # "real" | "demo" | "simulated"
+    is_seed: bool = False
     path: List[Dict[str, Any]]  # list of {lat, lon, depth, time, temp, salinity}
     current_lat: float
     current_lon: float
@@ -74,3 +76,52 @@ class DashboardStats(BaseModel):
     active_anomalies_count: int
     last_sync_time: str
     bounding_box: Dict[str, float]
+    database_engine: Optional[str] = None
+    sst_data_source: Optional[str] = "demo"  # "live" | "cached" | "demo"
+    sst_data_timestamp: Optional[str] = None
+    sst_fetched_at: Optional[str] = None
+    sst_age_hours: Optional[float] = None
+    sst_is_stale: bool = False
+    sst_fallback_reason: Optional[str] = None
+
+class GridMetadata(BaseModel):
+    lat_min: float
+    lat_max: float
+    lat_step: float
+    lon_min: float
+    lon_max: float
+    lon_step: float
+    num_lats: int
+    num_lons: int
+    units: str = "degree_C"
+
+class SSTDailyDocument(BaseModel):
+    dataset_id: str
+    date: str  # YYYY-MM-DD
+    region_id: str  # "indian_ocean"
+    data_timestamp: str  # ISO 8601
+    fetched_at: str  # ISO 8601
+    source: str  # "NOAA CoastWatch ERDDAP"
+    revision: str = "nrt"  # "nrt" | "final"
+    is_seed: bool = False
+    data_source: str = "live"  # "live" | "cached" | "demo"
+    fallback_reason: Optional[str] = None
+    grid_metadata: GridMetadata
+    sst_grid: List[Optional[float]]  # flattened row-major float32/None grid
+    anom_grid: List[Optional[float]]  # flattened row-major float32/None grid
+    record_count: int
+    stats: Dict[str, float]  # {"min_sst": ..., "max_sst": ..., "mean_sst": ...}
+
+class IngestRunDocument(BaseModel):
+    job_id: str
+    dataset_id: str
+    started_at: str
+    finished_at: Optional[str] = None
+    status: str  # "running" | "success" | "failed"
+    rows_fetched: int = 0
+    rows_accepted: int = 0
+    rows_rejected: int = 0
+    rejection_reasons: Dict[str, int] = Field(default_factory=dict)
+    error_message: Optional[str] = None
+    data_source: str = "live"
+

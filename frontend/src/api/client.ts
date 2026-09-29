@@ -59,6 +59,40 @@ export async function fetchOceanGrid(variable: string, depth: number): Promise<{
   return res.json();
 }
 
+export async function fetchSSTDateRange(): Promise<{
+  oldest_stored_date: string;
+  newest_stored_date: string;
+  stored_days_count: number;
+  data_source: string;
+  is_seed: boolean;
+}> {
+  const res = await fetch(`${API_BASE}/sst/range`);
+  if (!res.ok) throw new Error('Failed to fetch SST date range');
+  return res.json();
+}
+
+export async function fetchProbePoint(lat: number, lon: number, date?: string): Promise<{
+  requested_lat: number;
+  requested_lon: number;
+  nearest_lat: number;
+  nearest_lon: number;
+  date?: string;
+  sst_value?: number | null;
+  anom_value?: number | null;
+  units: string;
+  data_source: string;
+  is_seed: boolean;
+  fallback_reason?: string;
+  time_series: Array<{ date?: string; sst?: number; anom?: number }>;
+}> {
+  const url = date
+    ? `${API_BASE}/probe?lat=${lat}&lon=${lon}&date=${encodeURIComponent(date)}`
+    : `${API_BASE}/probe?lat=${lat}&lon=${lon}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Failed to probe point location');
+  return res.json();
+}
+
 export async function triggerSync(): Promise<any> {
   const res = await fetch(`${API_BASE}/sync`, { method: 'POST' });
   if (!res.ok) throw new Error('Failed to sync data');

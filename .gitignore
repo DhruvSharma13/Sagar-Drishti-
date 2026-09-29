@@ -4,6 +4,10 @@
 .env.*
 !.env.example
 
+# Secrets & Keys
+*.pem
+*.key
+
 # Node dependencies & build outputs
 node_modules/
 dist/
@@ -14,13 +18,16 @@ out/
 # Python cache & virtual environments
 __pycache__/
 *.py[cod]
+*.pyc
 *$py.class
-.venv/
-venv/
+.venv*/
+venv*/
 ENV/
 env/
 
-# Database files
+# Cache & Data files
+backend/cache/
+data_cache.json
 *.db
 *.sqlite
 *.sqlite3
